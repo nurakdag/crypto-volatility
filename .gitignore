@@ -1,0 +1,27 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# GCP - Service account keys (ASLA push'lama)
+*.json
+!dbt_project.yml
+
+# Kafka consumer output
+ingest/out/
+
+# Logs
+logs/
+*.log
+
+# dbt
+crypto_dbt/target/
+crypto_dbt/dbt_packages/
+crypto_dbt/logs/
+
+# OS
+.DS_Store
+desktop.ini
+Thumbs.db
