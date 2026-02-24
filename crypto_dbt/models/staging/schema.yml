@@ -1,0 +1,39 @@
+version: 2
+
+models:
+  - name: stg_trades
+    description: >
+      Staging view over crypto_raw.trades.
+      Casts types, filters invalid rows, and adds derived time-bucket columns.
+    columns:
+      - name: event_ts
+        description: "Trade event timestamp (UTC)"
+        tests:
+          - not_null
+      - name: ingest_ts
+        description: "Kafka consumer ingest timestamp (UTC)"
+      - name: symbol
+        description: "Trading pair in uppercase (e.g. BTCUSDT)"
+        tests:
+          - not_null
+      - name: trade_id
+        description: "Unique Binance trade ID"
+        tests:
+          - not_null
+          - unique
+      - name: is_buyer_maker
+        description: "True = taker sell, False = taker buy"
+      - name: price
+        description: "Trade execution price (NUMERIC)"
+        tests:
+          - not_null
+      - name: quantity
+        description: "Trade quantity in base asset (NUMERIC)"
+        tests:
+          - not_null
+      - name: trade_date
+        description: "DATE(event_ts) — partition alignment"
+      - name: event_minute
+        description: "TIMESTAMP_TRUNC(event_ts, MINUTE)"
+      - name: event_hour
+        description: "TIMESTAMP_TRUNC(event_ts, HOUR)"

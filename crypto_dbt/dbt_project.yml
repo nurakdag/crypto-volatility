@@ -31,6 +31,14 @@ clean-targets:         # directories to be removed by `dbt clean`
 # files using the `{{ config(...) }}` macro.
 models:
   crypto_dbt:
-    # Config indicated by + and applies to all files under models/example/
+    staging:
+      +materialized: view
+      +schema: crypto_analytics
+
+    marts:
+      +materialized: incremental
+      +schema: crypto_analytics
+
+    # Legacy example models (not used in production)
     example:
       +materialized: view

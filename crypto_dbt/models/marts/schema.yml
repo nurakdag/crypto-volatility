@@ -1,0 +1,72 @@
+version: 2
+
+models:
+  - name: agg_1m_prices
+    description: >
+      1-minute OHLC candlestick aggregation per symbol.
+      Incrementally built from stg_trades using insert_overwrite on day partitions.
+    columns:
+      - name: window_start
+        description: "Start of the 1-minute bucket (TIMESTAMP_TRUNC to MINUTE)"
+        tests:
+          - not_null
+      - name: window_end
+        description: "window_start + 1 minute"
+      - name: symbol
+        description: "Trading pair (e.g. BTCUSDT)"
+        tests:
+          - not_null
+      - name: open_price
+        description: "First trade price in the window"
+      - name: high_price
+        description: "Highest trade price"
+      - name: low_price
+        description: "Lowest trade price"
+      - name: close_price
+        description: "Last trade price in the window"
+      - name: avg_price
+        description: "Volume-weighted average price (VWAP)"
+      - name: volume
+        description: "Total base asset volume traded"
+      - name: quote_volume
+        description: "Total quote asset volume (price * qty)"
+      - name: trade_count
+        description: "Number of trades in the window"
+      - name: buy_volume
+        description: "Taker buy quantity (is_buyer_maker = FALSE)"
+      - name: sell_volume
+        description: "Taker sell quantity (is_buyer_maker = TRUE)"
+
+  - name: volatility_alert_model
+    description: >
+      Per-minute volatility metrics and alert flags.
+      Derives rolling statistics (MA, stddev, z-score) and flags anomalous windows.
+    columns:
+      - name: window_start
+        description: "Start of the 1-minute bucket"
+        tests:
+          - not_null
+      - name: symbol
+        description: "Trading pair"
+        tests:
+          - not_null
+      - name: price_range_pct
+        description: "(high - low) / avg_price * 100 — intra-bar spread %"
+      - name: return_pct
+        description: "Close-to-close 1-minute return %"
+      - name: ma_10m
+        description: "10-window simple moving average of close_price"
+      - name: ma_30m
+        description: "30-window simple moving average of close_price"
+      - name: stddev_10m
+        description: "10-window population standard deviation of close_price"
+      - name: z_score
+        description: "(close_price - ma_10m) / stddev_10m"
+      - name: buy_sell_ratio
+        description: "buy_volume / sell_volume — buying pressure indicator"
+      - name: is_alert
+        description: "TRUE when any volatility threshold is breached"
+      - name: alert_reason
+        description: "First matching alert rule: Z_SCORE_SPIKE | RETURN_SPIKE | WIDE_SPREAD"
+      - name: modeled_at
+        description: "Timestamp when dbt wrote this row"

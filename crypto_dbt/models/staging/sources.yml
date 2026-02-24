@@ -1,0 +1,25 @@
+version: 2
+
+sources:
+  - name: crypto_raw
+    database: crypto-volatility-platform
+    schema: crypto_raw
+    description: "Raw trade events ingested from Binance via Kafka streaming"
+    tables:
+      - name: trades
+        description: "Real-time trade events from Binance WebSocket stream"
+        columns:
+          - name: event_ts
+            description: "Binance trade event timestamp (field T, UTC)"
+          - name: symbol
+            description: "Trading pair symbol (e.g. BTCUSDT, ETHUSDT)"
+          - name: price
+            description: "Executed trade price"
+          - name: quantity
+            description: "Executed trade quantity (base asset)"
+          - name: trade_id
+            description: "Unique Binance trade ID"
+          - name: is_buyer_maker
+            description: "True if the buyer is the market maker (i.e. sell order)"
+          - name: ingest_ts
+            description: "Timestamp when the Kafka consumer wrote the row"
