@@ -1,19 +1,26 @@
 """
-Binance WebSocket Trade Stream → Kafka Producer
+Crypto WebSocket Trade Stream → Kafka Producer
 Topic: trades
 
 Desteklenen exchange'ler (EXCHANGE env değişkeni ile seç):
-  global  →  wss://stream.binance.com:9443   — USDT çiftleri (VPN/proxy gerekebilir)
-  tr      →  wss://stream.binance.tr:9443    — TRY çiftleri  (Türkiye'den direkt erişim)
+  bybit   →  wss://stream.bybit.com/v5/public/spot  — USDT, Türkiye erişimli (varsayılan)
+  binance →  wss://stream.binance.com:9443           — USDT, VPN gerekebilir
+
+Bybit trade event fields:
+  T: trade time (ms)
+  s: symbol
+  p: price
+  v: quantity
+  i: trade id
+  S: side ("Buy"/"Sell")
 
 Binance trade event fields:
   e: event type
-  E: event time (ms)
+  T: trade time (ms)
   s: symbol
-  t: trade id
   p: price
   q: quantity
-  T: trade time (ms)
+  t: trade id
   m: is_buyer_maker
 """
 
@@ -25,7 +32,6 @@ from datetime import datetime, timezone
 
 import websocket
 from kafka import KafkaProducer
-from kafka.errors import KafkaError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,25 +40,18 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Ayarlar ────────────────────────────────────────────────────────────────────
-# Exchange seçimi: "tr" → Binance TR (TRY çiftleri, Türkiye erişimli)
-#                  "global" → Binance Global (USDT çiftleri, VPN gerekebilir)
-#   set EXCHANGE=tr
-EXCHANGE = os.environ.get("EXCHANGE", "tr").lower()
-
-if EXCHANGE == "tr":
-    WS_BASE    = "wss://stream.binance.tr:9443"
-    SYMBOLS    = ["btctry", "ethtry"]          # TRY çiftleri
-else:
-    WS_BASE    = "wss://stream.binance.com:9443"
-    SYMBOLS    = ["btcusdt", "ethusdt"]        # USDT çiftleri
+# Exchange seçimi:
+#   set EXCHANGE=bybit    → Bybit (USDT çiftleri, Türkiye'den erişilebilir)
+#   set EXCHANGE=binance  → Binance Global (USDT çiftleri, VPN gerekebilir)
+EXCHANGE = os.environ.get("EXCHANGE", "bybit").lower()
 
 KAFKA_BOOTSTRAP = "127.0.0.1:9092"
 KAFKA_TOPIC     = "trades"
-RECONNECT_DELAY = 5                            # bağlantı kopunca kaç sn bekle
+RECONNECT_DELAY = 5
 
-# Proxy ayarları (opsiyonel) — ortam değişkeni ile set et:
+# Proxy ayarları (opsiyonel):
 #   set HTTPS_PROXY=http://proxyhost:port
-#   veya set HTTPS_PROXY=socks5://proxyhost:port
+#   set HTTPS_PROXY=socks5://proxyhost:port
 _raw_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
 PROXY_HOST = None
 PROXY_PORT = None
@@ -64,8 +63,6 @@ if _raw_proxy:
     PROXY_HOST = _p.hostname
     PROXY_PORT = _p.port
     log.info("Proxy aktif: %s://%s:%s", PROXY_TYPE, PROXY_HOST, PROXY_PORT)
-
-log.info("Exchange: %s | Base: %s | Semboller: %s", EXCHANGE.upper(), WS_BASE, SYMBOLS)
 # ───────────────────────────────────────────────────────────────────────────────
 
 producer = KafkaProducer(
@@ -76,25 +73,82 @@ producer = KafkaProducer(
 
 
 def ms_to_iso(ms: int) -> str:
-    """Binance millisecond timestamp → ISO-8601 string (BigQuery TIMESTAMP uyumlu)."""
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
 
 
-def on_open(ws):
-    log.info("WebSocket bağlantısı kuruldu.")
+# ── Bybit ───────────────────────────────────────────────────────────────────────
+BYBIT_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+BYBIT_WS_URL  = "wss://stream.bybit.com/v5/public/spot"
 
 
-def on_message(ws, raw: str):
+def bybit_on_open(ws):
+    log.info("Bybit WebSocket bağlantısı kuruldu.")
+    subscribe_msg = {
+        "op": "subscribe",
+        "args": [f"publicTrade.{s}" for s in BYBIT_SYMBOLS],
+    }
+    ws.send(json.dumps(subscribe_msg))
+    log.info("Abone olundu: %s", BYBIT_SYMBOLS)
+
+
+def bybit_on_message(ws, raw: str):
     try:
         data = json.loads(raw)
 
-        # Sadece 'trade' event'lerini işle
+        # Abonelik onay mesajlarını atla
+        if "op" in data or "topic" not in data:
+            return
+
+        for trade in data.get("data", []):
+            # Bybit S: "Buy" → taker alıcı → is_buyer_maker=False
+            # Bybit S: "Sell" → taker satıcı → is_buyer_maker=True
+            is_buyer_maker = trade["S"] == "Sell"
+
+            msg = {
+                "event_ts":       ms_to_iso(int(trade["T"])),
+                "symbol":         trade["s"],
+                "price":          float(trade["p"]),
+                "quantity":       float(trade["v"]),
+                "trade_id":       trade["i"],
+                "is_buyer_maker": is_buyer_maker,
+                "ingest_ts":      datetime.now(timezone.utc).isoformat(),
+            }
+
+            future = producer.send(KAFKA_TOPIC, msg)
+            future.add_errback(lambda exc: log.error("Kafka send error: %s", exc))
+
+            log.info("✓ %s | trade_id=%s | price=%s | qty=%s",
+                     msg["symbol"], msg["trade_id"], msg["price"], msg["quantity"])
+
+    except Exception as exc:
+        log.exception("bybit_on_message error: %s", exc)
+
+
+# ── Binance ─────────────────────────────────────────────────────────────────────
+BINANCE_SYMBOLS = ["btcusdt", "ethusdt"]
+BINANCE_WS_BASE = "wss://stream.binance.com:9443"
+
+
+def binance_build_url(symbols: list[str]) -> str:
+    streams = "/".join(f"{s}@trade" for s in symbols)
+    if len(symbols) == 1:
+        return f"{BINANCE_WS_BASE}/ws/{streams}"
+    return f"{BINANCE_WS_BASE}/stream?streams={streams}"
+
+
+def binance_on_open(ws):
+    log.info("Binance WebSocket bağlantısı kuruldu.")
+
+
+def binance_on_message(ws, raw: str):
+    try:
+        data = json.loads(raw)
         if data.get("e") != "trade":
             return
 
         msg = {
-            "event_ts":       ms_to_iso(data["T"]),          # trade time
-            "symbol":         data["s"],                      # "BTCUSDT"
+            "event_ts":       ms_to_iso(data["T"]),
+            "symbol":         data["s"],
             "price":          float(data["p"]),
             "quantity":       float(data["q"]),
             "trade_id":       int(data["t"]),
@@ -109,9 +163,10 @@ def on_message(ws, raw: str):
                  msg["symbol"], msg["trade_id"], msg["price"], msg["quantity"])
 
     except Exception as exc:
-        log.exception("on_message error: %s", exc)
+        log.exception("binance_on_message error: %s", exc)
 
 
+# ── Ortak ───────────────────────────────────────────────────────────────────────
 def on_error(ws, error):
     log.error("WebSocket error: %s", error)
 
@@ -120,26 +175,23 @@ def on_close(ws, close_status_code, close_msg):
     log.warning("WebSocket kapatıldı (code=%s msg=%s)", close_status_code, close_msg)
 
 
-def build_stream_url(symbols: list[str]) -> str:
-    """
-    Tekli:   <base>/ws/btctry@trade
-    Çoklu:   <base>/stream?streams=btctry@trade/ethtry@trade
-    """
-    streams = "/".join(f"{s}@trade" for s in symbols)
-    if len(symbols) == 1:
-        return f"{WS_BASE}/ws/{streams}"
-    return f"{WS_BASE}/stream?streams={streams}"
-
-
 def run():
-    url = build_stream_url(SYMBOLS)
-    log.info("Bağlanıyor: %s", url)
+    if EXCHANGE == "binance":
+        url       = binance_build_url(BINANCE_SYMBOLS)
+        open_fn   = binance_on_open
+        message_fn = binance_on_message
+    else:
+        url       = BYBIT_WS_URL
+        open_fn   = bybit_on_open
+        message_fn = bybit_on_message
+
+    log.info("Exchange: %s | Bağlanıyor: %s", EXCHANGE.upper(), url)
 
     while True:
         ws = websocket.WebSocketApp(
             url,
-            on_open=on_open,
-            on_message=on_message,
+            on_open=open_fn,
+            on_message=message_fn,
             on_error=on_error,
             on_close=on_close,
         )
