@@ -1,7 +1,10 @@
 """
 Binance WebSocket Trade Stream → Kafka Producer
 Topic: trades
-Stream: wss://stream.binance.com:9443/ws/<symbol>@trade
+
+Desteklenen exchange'ler (EXCHANGE env değişkeni ile seç):
+  global  →  wss://stream.binance.com:9443   — USDT çiftleri (VPN/proxy gerekebilir)
+  tr      →  wss://stream.binance.tr:9443    — TRY çiftleri  (Türkiye'den direkt erişim)
 
 Binance trade event fields:
   e: event type
@@ -31,10 +34,21 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Ayarlar ────────────────────────────────────────────────────────────────────
-SYMBOLS = ["btcusdt", "ethusdt"]          # istediğin coinleri ekle
+# Exchange seçimi: "tr" → Binance TR (TRY çiftleri, Türkiye erişimli)
+#                  "global" → Binance Global (USDT çiftleri, VPN gerekebilir)
+#   set EXCHANGE=tr
+EXCHANGE = os.environ.get("EXCHANGE", "tr").lower()
+
+if EXCHANGE == "tr":
+    WS_BASE    = "wss://stream.binance.tr:9443"
+    SYMBOLS    = ["btctry", "ethtry"]          # TRY çiftleri
+else:
+    WS_BASE    = "wss://stream.binance.com:9443"
+    SYMBOLS    = ["btcusdt", "ethusdt"]        # USDT çiftleri
+
 KAFKA_BOOTSTRAP = "127.0.0.1:9092"
-KAFKA_TOPIC = "trades"
-RECONNECT_DELAY = 5                        # bağlantı kopunca kaç sn bekle
+KAFKA_TOPIC     = "trades"
+RECONNECT_DELAY = 5                            # bağlantı kopunca kaç sn bekle
 
 # Proxy ayarları (opsiyonel) — ortam değişkeni ile set et:
 #   set HTTPS_PROXY=http://proxyhost:port
@@ -46,10 +60,12 @@ PROXY_TYPE = None
 if _raw_proxy:
     import urllib.parse
     _p = urllib.parse.urlparse(_raw_proxy)
-    PROXY_TYPE = _p.scheme          # "http" veya "socks5"
+    PROXY_TYPE = _p.scheme
     PROXY_HOST = _p.hostname
     PROXY_PORT = _p.port
     log.info("Proxy aktif: %s://%s:%s", PROXY_TYPE, PROXY_HOST, PROXY_PORT)
+
+log.info("Exchange: %s | Base: %s | Semboller: %s", EXCHANGE.upper(), WS_BASE, SYMBOLS)
 # ───────────────────────────────────────────────────────────────────────────────
 
 producer = KafkaProducer(
@@ -106,13 +122,13 @@ def on_close(ws, close_status_code, close_msg):
 
 def build_stream_url(symbols: list[str]) -> str:
     """
-    Tekli:   wss://stream.binance.com:9443/ws/btcusdt@trade
-    Çoklu:   wss://stream.binance.com:9443/stream?streams=btcusdt@trade/ethusdt@trade
+    Tekli:   <base>/ws/btctry@trade
+    Çoklu:   <base>/stream?streams=btctry@trade/ethtry@trade
     """
     streams = "/".join(f"{s}@trade" for s in symbols)
     if len(symbols) == 1:
-        return f"wss://stream.binance.com:9443/ws/{streams}"
-    return f"wss://stream.binance.com:9443/stream?streams={streams}"
+        return f"{WS_BASE}/ws/{streams}"
+    return f"{WS_BASE}/stream?streams={streams}"
 
 
 def run():
