@@ -3,8 +3,17 @@ Crypto WebSocket Trade Stream → Kafka Producer
 Topic: trades
 
 Desteklenen exchange'ler (EXCHANGE env değişkeni ile seç):
-  bybit   →  wss://stream.bybit.com/v5/public/spot  — USDT, Türkiye erişimli (varsayılan)
-  binance →  wss://stream.binance.com:9443           — USDT, VPN gerekebilir
+  kraken  →  wss://ws.kraken.com/v2                  — USD çiftleri, Türkiye erişimli (varsayılan)
+  bybit   →  wss://stream.bybit.com/v5/public/spot   — USDT, Türkiye'de engellenebilir
+  binance →  wss://stream.binance.com:9443            — USDT, VPN gerekebilir
+
+Kraken WebSocket V2 trade event fields:
+  symbol:     trading pair (e.g. "BTC/USD")
+  side:       "buy" / "sell"
+  price:      float
+  qty:        float
+  trade_id:   int
+  timestamp:  ISO8601 UTC string
 
 Bybit trade event fields:
   T: trade time (ms)
@@ -41,9 +50,10 @@ log = logging.getLogger(__name__)
 
 # ── Ayarlar ────────────────────────────────────────────────────────────────────
 # Exchange seçimi:
-#   set EXCHANGE=bybit    → Bybit (USDT çiftleri, Türkiye'den erişilebilir)
+#   set EXCHANGE=kraken   → Kraken (USD çiftleri, Türkiye'den erişilebilir) [varsayılan]
+#   set EXCHANGE=bybit    → Bybit (USDT çiftleri, Türkiye'de engellenebilir)
 #   set EXCHANGE=binance  → Binance Global (USDT çiftleri, VPN gerekebilir)
-EXCHANGE = os.environ.get("EXCHANGE", "bybit").lower()
+EXCHANGE = os.environ.get("EXCHANGE", "kraken").lower()
 
 KAFKA_BOOTSTRAP = "127.0.0.1:9092"
 KAFKA_TOPIC     = "trades"
@@ -74,6 +84,67 @@ producer = KafkaProducer(
 
 def ms_to_iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+
+
+# ── Kraken ──────────────────────────────────────────────────────────────────────
+KRAKEN_WS_URL = "wss://ws.kraken.com/v2"
+# Kraken USD çiftlerini USDT karşılığına eşle (BigQuery'deki sembol şemasıyla uyum için)
+KRAKEN_SYMBOL_MAP = {
+    "BTC/USD": "BTCUSDT",
+    "ETH/USD": "ETHUSDT",
+}
+
+
+def kraken_on_open(ws):
+    log.info("Kraken WebSocket bağlantısı kuruldu.")
+    subscribe_msg = {
+        "method": "subscribe",
+        "params": {
+            "channel": "trade",
+            "symbol": list(KRAKEN_SYMBOL_MAP.keys()),
+        },
+    }
+    ws.send(json.dumps(subscribe_msg))
+    log.info("Abone olundu: %s", list(KRAKEN_SYMBOL_MAP.keys()))
+
+
+def kraken_on_message(ws, raw: str):
+    try:
+        data = json.loads(raw)
+
+        # Sadece "trade" kanalındaki "snapshot" veya "update" mesajlarını işle
+        if data.get("channel") != "trade" or data.get("type") not in ("snapshot", "update"):
+            return
+
+        for trade in data.get("data", []):
+            raw_symbol = trade.get("symbol", "")
+            symbol = KRAKEN_SYMBOL_MAP.get(raw_symbol, raw_symbol.replace("/", ""))
+
+            # Kraken: side="buy" → taker alıcı → is_buyer_maker=False
+            # Kraken: side="sell" → taker satıcı → is_buyer_maker=True
+            is_buyer_maker = trade["side"] == "sell"
+
+            # Kraken timestamp zaten ISO8601 ama "Z" suffix'i olabilir → normalize et
+            ts = trade["timestamp"].replace("Z", "+00:00")
+
+            msg = {
+                "event_ts":       ts,
+                "symbol":         symbol,
+                "price":          float(trade["price"]),
+                "quantity":       float(trade["qty"]),
+                "trade_id":       int(trade["trade_id"]),
+                "is_buyer_maker": is_buyer_maker,
+                "ingest_ts":      datetime.now(timezone.utc).isoformat(),
+            }
+
+            future = producer.send(KAFKA_TOPIC, msg)
+            future.add_errback(lambda exc: log.error("Kafka send error: %s", exc))
+
+            log.info("✓ %s | trade_id=%s | price=%s | qty=%s",
+                     msg["symbol"], msg["trade_id"], msg["price"], msg["quantity"])
+
+    except Exception as exc:
+        log.exception("kraken_on_message error: %s", exc)
 
 
 # ── Bybit ───────────────────────────────────────────────────────────────────────
@@ -177,13 +248,17 @@ def on_close(ws, close_status_code, close_msg):
 
 def run():
     if EXCHANGE == "binance":
-        url       = binance_build_url(BINANCE_SYMBOLS)
-        open_fn   = binance_on_open
+        url        = binance_build_url(BINANCE_SYMBOLS)
+        open_fn    = binance_on_open
         message_fn = binance_on_message
-    else:
-        url       = BYBIT_WS_URL
-        open_fn   = bybit_on_open
+    elif EXCHANGE == "bybit":
+        url        = BYBIT_WS_URL
+        open_fn    = bybit_on_open
         message_fn = bybit_on_message
+    else:  # kraken (varsayılan)
+        url        = KRAKEN_WS_URL
+        open_fn    = kraken_on_open
+        message_fn = kraken_on_message
 
     log.info("Exchange: %s | Bağlanıyor: %s", EXCHANGE.upper(), url)
 
