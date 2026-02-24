@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 # ── Ayarlar ────────────────────────────────────────────────────────────────────
 SYMBOLS = ["btcusdt", "ethusdt"]          # istediğin coinleri ekle
-KAFKA_BOOTSTRAP = "localhost:9092"
+KAFKA_BOOTSTRAP = "127.0.0.1:9092"
 KAFKA_TOPIC = "trades"
 RECONNECT_DELAY = 5                        # bağlantı kopunca kaç sn bekle
 # ───────────────────────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ DATASET = "crypto_raw"
 TABLE = "trades"
 TABLE_ID = f"{PROJECT_ID}.{DATASET}.{TABLE}"
 
-BOOTSTRAP = "localhost:9092"
+BOOTSTRAP = "127.0.0.1:9092"
 TOPIC = "trades"
 
 BATCH_SIZE = 200          # BigQuery streaming için batch iyi olur
