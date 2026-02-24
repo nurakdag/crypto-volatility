@@ -15,6 +15,7 @@ Binance trade event fields:
 """
 
 import json
+import os
 import time
 import logging
 from datetime import datetime, timezone
@@ -34,6 +35,21 @@ SYMBOLS = ["btcusdt", "ethusdt"]          # istediğin coinleri ekle
 KAFKA_BOOTSTRAP = "127.0.0.1:9092"
 KAFKA_TOPIC = "trades"
 RECONNECT_DELAY = 5                        # bağlantı kopunca kaç sn bekle
+
+# Proxy ayarları (opsiyonel) — ortam değişkeni ile set et:
+#   set HTTPS_PROXY=http://proxyhost:port
+#   veya set HTTPS_PROXY=socks5://proxyhost:port
+_raw_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+PROXY_HOST = None
+PROXY_PORT = None
+PROXY_TYPE = None
+if _raw_proxy:
+    import urllib.parse
+    _p = urllib.parse.urlparse(_raw_proxy)
+    PROXY_TYPE = _p.scheme          # "http" veya "socks5"
+    PROXY_HOST = _p.hostname
+    PROXY_PORT = _p.port
+    log.info("Proxy aktif: %s://%s:%s", PROXY_TYPE, PROXY_HOST, PROXY_PORT)
 # ───────────────────────────────────────────────────────────────────────────────
 
 producer = KafkaProducer(
@@ -111,7 +127,13 @@ def run():
             on_error=on_error,
             on_close=on_close,
         )
-        ws.run_forever(ping_interval=20, ping_timeout=10)
+        ws.run_forever(
+            ping_interval=20,
+            ping_timeout=10,
+            http_proxy_host=PROXY_HOST,
+            http_proxy_port=PROXY_PORT,
+            proxy_type=PROXY_TYPE,
+        )
 
         log.warning("%s sn sonra yeniden bağlanıyor...", RECONNECT_DELAY)
         time.sleep(RECONNECT_DELAY)
